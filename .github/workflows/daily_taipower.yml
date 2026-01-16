@@ -2,8 +2,7 @@ name: Daily Taipower Settlement Monthly Files
 
 on:
   schedule:
-    # UTC 01:30 = 台北 09:30（你也可以自己調）
-    - cron: "30 1 * * *"
+    - cron: "0 16 * * *"
   workflow_dispatch: {}
 
 permissions:

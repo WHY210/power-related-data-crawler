@@ -5,12 +5,38 @@ from datetime import datetime, timedelta, date
 
 import requests
 import pandas as pd
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 API_URL = "https://etp.taipower.com.tw/api/infoboard/settle_value/query"
 
 
-def fetch_one_day(date_str: str, sleep_sec: float = 0.3):
-    resp = requests.get(API_URL, params={"startDate": date_str}, timeout=20)
+def build_session() -> requests.Session:
+    retry = Retry(
+        total=8,
+        connect=8,
+        read=8,
+        backoff_factor=1.2,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    s = requests.Session()
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+
+def fetch_one_day(date_str: str, sleep_sec: float = 0.3, session: requests.Session | None = None):
+    session = session or build_session()
+
+    resp = session.get(
+        API_URL,
+        params={"startDate": date_str},
+        timeout=(20, 60),  # (connect timeout, read timeout)
+        headers={"User-Agent": "Mozilla/5.0 (compatible; GitHubActionsBot/1.0)"},
+    )
     resp.raise_for_status()
     obj = resp.json()
 
@@ -20,12 +46,8 @@ def fetch_one_day(date_str: str, sleep_sec: float = 0.3):
 
     rows = []
     for i, row in enumerate(data):
-        out = {
-            "date": date_str,
-            "hour": f"{i:02d}",
-        }
-        for k, v in row.items():
-            out[k] = v
+        out = {"date": date_str, "hour": f"{i:02d}"}
+        out.update(row)
         rows.append(out)
 
     time.sleep(sleep_sec)
@@ -58,7 +80,6 @@ def merge_and_save(df_old: pd.DataFrame, new_rows: list[dict], csv_path: Path, j
     else:
         df = pd.concat([df_old, df_new], ignore_index=True)
 
-    # 去重：以 date + hour 當唯一鍵（保留最後出現的一筆）
     if "date" not in df.columns or "hour" not in df.columns:
         raise ValueError("Missing 'date' or 'hour' columns in merged dataframe")
 
@@ -68,10 +89,8 @@ def merge_and_save(df_old: pd.DataFrame, new_rows: list[dict], csv_path: Path, j
     df.drop_duplicates(subset=["date", "hour"], keep="last", inplace=True)
     df.sort_values(["date", "hour"], inplace=True)
 
-    # CSV
     df.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
-    # JSON（array of objects）
     records = df.to_dict(orient="records")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False)
@@ -87,9 +106,11 @@ def main(run_date: str, out_dir: str, fallback_yesterday: bool = False):
     d = parse_date(run_date)
     csv_path, json_path = monthly_paths(Path(out_dir), d)
 
+    sess = build_session()
+
     try:
         print(f"[INFO] fetching {run_date}")
-        rows = fetch_one_day(run_date)
+        rows = fetch_one_day(run_date, session=sess)
     except Exception as e:
         if not fallback_yesterday:
             raise
@@ -97,8 +118,7 @@ def main(run_date: str, out_dir: str, fallback_yesterday: bool = False):
         yd_str = yd.strftime("%Y-%m-%d")
         print(f"[WARN] failed fetching {run_date}: {e}")
         print(f"[INFO] fallback fetching {yd_str}")
-        rows = fetch_one_day(yd_str)
-        # 注意：fallback 的資料會寫入「昨天所屬月份」檔案
+        rows = fetch_one_day(yd_str, session=sess)
         csv_path, json_path = monthly_paths(Path(out_dir), yd)
 
     df_old = load_existing(csv_path)
