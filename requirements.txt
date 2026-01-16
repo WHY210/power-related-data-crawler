@@ -1,9 +1,5 @@
-numpy==1.24.4
-numpy==1.24.3
-pandas==2.0.3
-pandas==1.5.3
-Requests==2.32.3
-selenium==4.31.0
-tkcalendar==1.6.1
-requests
+numpy
 pandas
+selenium
+tkcalendar
+requests
