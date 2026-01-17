@@ -14,13 +14,3 @@ venv/
 # macOS
 .DS_Store
 
-# Jupyter Notebooks
-*.ipynb
-
-# Generated data files and directories
-data/taipower_ancillary/*.json
-data/taipower_flow/*.json
-data/taipower_flow/raw/
-data/taipower_generators/*.json
-data/taipower_generators/raw/
-pic/
