@@ -28,3 +28,9 @@ wheels/
 .DS_Store
 .Trashes
 Thumbs.db
+
+
+# Project-specific ignores
+data/taipower_generators/raw/
+data/taipower_flow/raw/
+
