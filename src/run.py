@@ -196,13 +196,99 @@ def get_taipower_info(building_name):
              
     return "Unknown_Campus", "Unknown_Feeder", get_building_category(building_name)
 
+class BuildingDataManager:
+    def __init__(self, base_dir="data/ntu_building"):
+        self.base_dir = base_dir
+        # Cache for loaded DataFrames: key=(campus, feeder, subject), value=DataFrame
+        self.cache = {} 
+        # Track modified files
+        self.modified = set()
+
+    def _clean(self, s):
+        # Remove invalid characters for filenames
+        s = str(s).strip().replace('/', '_').replace('\\', '_').replace(':', '_')
+        if not s or s.lower() == 'nan':
+            return "Unknown"
+        return s
+
+    def _get_key(self, campus, feeder, subject):
+        return (self._clean(campus), self._clean(feeder), self._clean(subject))
+
+    def _get_file_path(self, key):
+        campus, feeder, subject = key
+        # Determine specific save directory
+        save_dir = os.path.join(self.base_dir, campus, feeder)
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        return os.path.join(save_dir, f"{subject}.csv")
+
+    def load(self, campus, feeder, subject):
+        key = self._get_key(campus, feeder, subject)
+        if key in self.cache:
+            return
+        
+        file_path = self._get_file_path(key)
+        if os.path.exists(file_path):
+            try:
+                df = pd.read_csv(file_path)
+                if 'Datetime' in df.columns:
+                    df['Datetime'] = pd.to_datetime(df['Datetime'])
+                    df.set_index('Datetime', inplace=True)
+                self.cache[key] = df
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
+                self.cache[key] = pd.DataFrame()
+        else:
+            self.cache[key] = pd.DataFrame()
+
+    def get_last_date(self, campus, feeder, subject, building_name):
+        key = self._get_key(campus, feeder, subject)
+        self.load(campus, feeder, subject)
+        df = self.cache[key]
+        
+        if not df.empty and building_name in df.columns:
+            valid_idx = df[building_name].last_valid_index()
+            if valid_idx:
+                return valid_idx
+        return None
+
+    def add_data(self, campus, feeder, subject, building_name, new_series):
+        key = self._get_key(campus, feeder, subject)
+        self.load(campus, feeder, subject)
+        df = self.cache[key]
+        
+        new_df = pd.DataFrame(new_series)
+        new_df.columns = [building_name]
+        new_df.index.name = 'Datetime'
+        
+        if df.empty:
+            df = new_df
+        else:
+            # Merge logic: align indices and update/append
+            combined_idx = df.index.union(new_df.index).sort_values()
+            df = df.reindex(combined_idx)
+            if building_name in df.columns:
+                 df.loc[new_df.index, building_name] = new_df[building_name]
+            else:
+                 df[building_name] = new_df[building_name]
+        
+        self.cache[key] = df
+        self.modified.add(key)
+
+    def save_all(self):
+        print(f"\nSaving {len(self.modified)} merged files...")
+        for key in self.modified:
+            file_path = self._get_file_path(key)
+            df = self.cache[key]
+            df.sort_index(inplace=True)
+            df.reset_index(inplace=True)
+            df.to_csv(file_path, index=False)
+        print("Save complete.")
+
 def update_buildings(force_start=None, force_end=None):
     print(">>> Updating Buildings...")
     
-    # Base directory for aggregated output
-    base_dir = "data/ntu_building"
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir)
+    manager = BuildingDataManager()
         
     today = datetime.now()
     yesterday = today - timedelta(days=1)
@@ -221,35 +307,9 @@ def update_buildings(force_start=None, force_end=None):
         # Progress indicator
         print(f"\r[{i}/{total_buildings}] Processing {b_val}...", end="", flush=True)
 
-        # Determine path
+        # Determine grouping info
         campus, feeder, subject = get_taipower_info(b_val)
         
-        # Clean up path components
-        def clean_path_comp(s):
-            return str(s).strip().replace('/', '_') if pd.notna(s) else "Unknown"
-            
-        campus = clean_path_comp(campus)
-        feeder = clean_path_comp(feeder)
-        subject = clean_path_comp(subject)
-        
-        # Determine specific save directory
-        save_dir = os.path.join(base_dir, campus, feeder, subject)
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-            
-        file_path = os.path.join(save_dir, f"{b_val}.csv")
-        
-        # Load existing data
-        df_building = pd.DataFrame()
-        if os.path.exists(file_path):
-            try:
-                df_building = pd.read_csv(file_path)
-                if 'Datetime' in df_building.columns:
-                    df_building['Datetime'] = pd.to_datetime(df_building['Datetime'])
-                    df_building.set_index('Datetime', inplace=True)
-            except Exception as e:
-                print(f"\nError reading {file_path}: {e}")
-
         # Determine start date
         start_date = None
         end_date = None
@@ -258,13 +318,10 @@ def update_buildings(force_start=None, force_end=None):
             start_date = datetime.strptime(force_start, "%Y-%m-%d")
             end_date = datetime.strptime(force_end, "%Y-%m-%d")
         else:
-            if not df_building.empty:
-                valid_idx = df_building.last_valid_index()
-                if valid_idx:
-                     start_date = valid_idx + timedelta(days=1)
-                     start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                else:
-                     start_date = datetime(today.year, 1, 1)
+            last_date = manager.get_last_date(campus, feeder, subject, b_val)
+            if last_date:
+                 start_date = last_date + timedelta(days=1)
+                 start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
             else:
                  start_date = datetime(today.year, 1, 1)
             
@@ -301,11 +358,12 @@ def update_buildings(force_start=None, force_end=None):
                     else:
                         data_output += [np.nan] * 24
                 except Exception as req_e:
+                    # print(f"Request error: {req_e}")
                     data_output += [np.nan] * 24
                 
                 time.sleep(0.05)
             
-            # Create Series/DataFrame for new data
+            # Create Series for new data
             new_idx = pd.date_range(start=start_date, end=end_date + timedelta(hours=23), freq='h')
             
             if len(data_output) != len(new_idx):
@@ -315,27 +373,15 @@ def update_buildings(force_start=None, force_end=None):
                      data_output = data_output[:len(new_idx)]
             
             new_series = pd.Series(data_output, index=new_idx, name=b_val)
-            new_df = pd.DataFrame(new_series)
-            new_df.index.name = 'Datetime'
             
-            # Merge
-            if df_building.empty:
-                df_building = new_df
-            else:
-                combined_idx = df_building.index.union(new_idx).sort_values()
-                df_building = df_building.reindex(combined_idx)
-                if b_val not in df_building.columns:
-                    df_building[b_val] = np.nan
-                df_building.loc[new_idx, b_val] = new_series
-
-            # Save Building Data
-            df_building.sort_index(inplace=True)
-            df_building.reset_index(inplace=True)
-            df_building.to_csv(file_path, index=False)
+            # Add to manager
+            manager.add_data(campus, feeder, subject, b_val, new_series)
 
         except Exception as e:
             print(f"\nFailed to process {b_val}: {e}")
 
+    # Save all accumulated data
+    manager.save_all()
     print("\n>>> Buildings Update Finished.")
 
 def update_meters(force_start=None, force_end=None):
