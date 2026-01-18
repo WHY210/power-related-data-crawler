@@ -1,0 +1,2 @@
+data/taipower_generators/*.json filter=lfs diff=lfs merge=lfs -text
+data/taipower_generators/raw/*.json filter=lfs diff=lfs merge=lfs -text
